@@ -1,10 +1,10 @@
 [Unit]
-Description=Run Hermes GitHub PR activity to Kanban bridge every 5 minutes
+Description=Run Hermes GitHub PR activity to Kanban bridge every 1 minute
 
 [Timer]
 OnBootSec=2min
-OnUnitActiveSec=5min
-AccuracySec=30s
+OnUnitActiveSec=1min
+AccuracySec=10s
 Persistent=true
 Unit=hermes-github-pr-kanban-bridge.service
 
