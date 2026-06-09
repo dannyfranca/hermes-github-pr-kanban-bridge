@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "enabled": true,
+  "board": "default",
+  "state_path": "/home/agent/.hermes/profiles/coder/github-pr-kanban-bridge/test-state.json",
+  "notify_existing_on_first_scan": true,
+  "ignored_actors": ["github-actions[bot]", "dependabot[bot]"],
+  "ignore_bot_actors": true,
+  "author": "github-pr-kanban-bridge-test",
+  "repos": ["DannyFranca/example"]
+}

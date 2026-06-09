@@ -1,0 +1,23 @@
+{
+  "author": "github-pr-kanban-bridge",
+  "board": "default",
+  "enabled": true,
+  "notes": [
+    "Copy this file to ~/.hermes/profiles/coder/github-pr-kanban-bridge/config.json and edit repos.",
+    "Only open PRs with head branches starting Hermes/ and body marker Kanban-Task: t_xxxxxxxx are considered."
+  ],
+  "notify_existing_on_first_scan": false,
+  "ignored_actors": [
+    "github-actions[bot]",
+    "dependabot[bot]"
+  ],
+  "ignore_bot_actors": true,
+  "state_retention_days": 90,
+  "state_max_seen_entries": 5000,
+  "state_max_baselined_prs": 1000,
+  "repos": [
+    "OWNER/REPO"
+  ],
+  "state_path": "~/.hermes/profiles/coder/github-pr-kanban-bridge/state.json",
+  "version": 1
+}

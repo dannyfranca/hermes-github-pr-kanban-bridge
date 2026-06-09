@@ -1,0 +1,44 @@
+{
+  "repos": {
+    "DannyFranca/example": [
+      {
+        "number": 42,
+        "title": "Example Hermes PR with linked Kanban card",
+        "url": "https://github.com/DannyFranca/example/pull/42",
+        "headRefName": "Hermes/example-bridge-test",
+        "body": "## Kanban\nKanban-Task: t_1f71d97b\nOpened-by: Hermes\n",
+        "activities": [
+          {
+            "id": 1001,
+            "event_type": "PR issue comment",
+            "action": "created",
+            "actor": "human-reviewer",
+            "url": "https://github.com/DannyFranca/example/pull/42#issuecomment-1001",
+            "created_at": "2026-06-08T21:20:00Z",
+            "body": "Please address this fixture feedback."
+          }
+        ]
+      },
+      {
+        "number": 43,
+        "title": "Ignored non-Hermes branch",
+        "url": "https://github.com/DannyFranca/example/pull/43",
+        "headRefName": "feature/not-hermes",
+        "body": "## Kanban\nKanban-Task: t_1f71d97b\nOpened-by: Hermes\n",
+        "activities": [
+          {"id": 1002, "event_type": "PR issue comment", "actor": "human-reviewer"}
+        ]
+      },
+      {
+        "number": 44,
+        "title": "Ignored missing Kanban marker",
+        "url": "https://github.com/DannyFranca/example/pull/44",
+        "headRefName": "Hermes/no-marker",
+        "body": "No marker here",
+        "activities": [
+          {"id": 1003, "event_type": "PR issue comment", "actor": "human-reviewer"}
+        ]
+      }
+    ]
+  }
+}
