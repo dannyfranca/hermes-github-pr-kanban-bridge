@@ -33,6 +33,9 @@ DEFAULT_BOARD = os.environ.get("HERMES_KANBAN_BOARD", "default")
 DEFAULT_STATE_RETENTION_DAYS = 90
 DEFAULT_STATE_MAX_SEEN_ENTRIES = 5000
 DEFAULT_STATE_MAX_BASELINED_PRS = 1000
+GITHUB_APP_HELPER = Path(os.environ.get("HERMES_GITHUB_APP_HELPER", "/home/agent/bin/hermes-gh-app"))
+GITHUB_APP_CONFIG = Path(os.environ.get("HERMES_GITHUB_APP_CONFIG", "/home/agent/.hermes/github-apps.json"))
+_GH_TOKEN_CACHE: dict[str, str] = {}
 
 
 @dataclass(frozen=True)
@@ -98,15 +101,45 @@ def save_json_atomic(path: Path, data: Any) -> None:
             os.unlink(tmp_name)
 
 
-def run_cmd(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def app_helper_configured() -> bool:
+    return GITHUB_APP_HELPER.exists() and GITHUB_APP_CONFIG.exists()
+
+
+def github_app_env(repo: str | None) -> dict[str, str] | None:
+    if not repo or not app_helper_configured():
+        return None
+    token = _GH_TOKEN_CACHE.get(repo)
+    if not token:
+        helper_env = os.environ.copy()
+        helper_env["HERMES_GITHUB_APP_CONFIG"] = str(GITHUB_APP_CONFIG)
+        proc = subprocess.run(
+            [str(GITHUB_APP_HELPER), "token", repo],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            env=helper_env,
+        )
+        if proc.returncode != 0:
+            raise RuntimeError(f"GitHub App token mint failed for {repo}")
+        token = proc.stdout.strip()
+        if not token:
+            raise RuntimeError(f"GitHub App token helper returned empty token for {repo}")
+        _GH_TOKEN_CACHE[repo] = token
+    return {"GH_TOKEN": token, "GITHUB_TOKEN": token}
+
+
+def run_cmd(args: list[str], *, check: bool = True, env_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    if env_overrides:
+        env.update(env_overrides)
     # Never print env or command lines that might include secrets. We only pass
     # static args and rely on gh's credential store/env internally.
     return subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=check, env=env)
 
 
-def gh_json(args: list[str]) -> Any:
-    proc = run_cmd(["gh", *args])
+def gh_json(args: list[str], *, repo: str | None = None) -> Any:
+    proc = run_cmd(["gh", *args], env_overrides=github_app_env(repo))
     text = proc.stdout.strip()
     return json.loads(text) if text else None
 
@@ -116,6 +149,8 @@ def gh_ready() -> tuple[bool, str]:
         return False, "gh CLI is not installed"
     proc = run_cmd(["gh", "auth", "status"], check=False)
     if proc.returncode != 0:
+        if app_helper_configured():
+            return True, "ok (GitHub App helper)"
         return False, "gh CLI is not authenticated"
     return True, "ok"
 
@@ -262,7 +297,7 @@ def user_login_and_type(obj: dict[str, Any]) -> tuple[str, str]:
 
 def collect_activities_from_api(repo: str, pr_number: int) -> list[Activity]:
     activities: list[Activity] = []
-    reviews = gh_json(["api", f"repos/{repo}/pulls/{pr_number}/reviews"])
+    reviews = gh_json(["api", f"repos/{repo}/pulls/{pr_number}/reviews"], repo=repo)
     for r in reviews or []:
         rid = r.get("id")
         if rid is None:
@@ -278,7 +313,7 @@ def collect_activities_from_api(repo: str, pr_number: int) -> list[Activity]:
             created_at=r.get("submitted_at") or r.get("submittedAt") or "",
         ))
 
-    review_comments = gh_json(["api", f"repos/{repo}/pulls/{pr_number}/comments"])
+    review_comments = gh_json(["api", f"repos/{repo}/pulls/{pr_number}/comments"], repo=repo)
     for c in review_comments or []:
         cid = c.get("id")
         if cid is None:
@@ -294,7 +329,7 @@ def collect_activities_from_api(repo: str, pr_number: int) -> list[Activity]:
             created_at=c.get("created_at") or "",
         ))
 
-    issue_comments = gh_json(["api", f"repos/{repo}/issues/{pr_number}/comments"])
+    issue_comments = gh_json(["api", f"repos/{repo}/issues/{pr_number}/comments"], repo=repo)
     for c in issue_comments or []:
         cid = c.get("id")
         if cid is None:
@@ -317,7 +352,7 @@ def list_open_prs_from_api(repo: str) -> list[dict[str, Any]]:
         "pr", "list", "--repo", repo, "--state", "open",
         "--json", "number,title,url,headRefName,body,author,updatedAt",
         "--limit", "100",
-    ])
+    ], repo=repo)
     return prs or []
 
 
@@ -326,7 +361,7 @@ def list_closed_prs_from_api(repo: str, limit: int) -> list[dict[str, Any]]:
         "pr", "list", "--repo", repo, "--state", "closed",
         "--json", "number,title,url,headRefName,body,author,updatedAt,closedAt,mergedAt",
         "--limit", str(limit),
-    ])
+    ], repo=repo)
     return prs or []
 
 
