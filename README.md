@@ -12,7 +12,7 @@ Local poller for Danny's Hermes VM workflow. It scans explicitly allowlisted Git
 
 ## PR gates
 
-A PR can mutate Kanban only when all gates pass:
+A PR can wake a blocked Kanban card on human review activity only when all gates pass:
 
 1. Repo is listed in config `repos`.
 2. PR is open.
@@ -20,6 +20,8 @@ A PR can mutate Kanban only when all gates pass:
 4. PR body contains `Kanban-Task: t_xxxxxxxx`.
 5. Linked Kanban task exists and is currently `blocked`.
 6. New activity is from a human, not an ignored bot/actor.
+
+Merged PRs are also scanned when `complete_merged_prs` is enabled. A recently closed PR with `mergedAt` and a `Kanban-Task` marker completes the linked Kanban card once, tracked in state as `completed_prs`.
 
 Activity types watched:
 
@@ -36,6 +38,7 @@ State stores compact IDs, not comment bodies:
 - `seen`: processed GitHub activity keys like `Owner/repo#42:review-comment:123456`.
 - `baselined_prs`: PRs whose historical activity was marked seen on first encounter.
 - `pending_unblocks`: retry queue if Kanban unblock failed.
+- `completed_prs`: merged PRs already used to complete linked Kanban cards.
 
 Retention defaults:
 

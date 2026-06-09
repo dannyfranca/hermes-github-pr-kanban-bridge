@@ -7,5 +7,6 @@ Type=oneshot
 Environment=HERMES_HOME=/home/agent/.hermes/profiles/coder
 Environment=HERMES_PROFILE=coder
 Environment=HERMES_KANBAN_BOARD=default
+Environment=PATH=/home/agent/.local/bin:/home/agent/bin:/home/agent/.hermes/node/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 WorkingDirectory=/home/agent/git/hermes-github-pr-kanban-bridge
 ExecStart=/home/agent/git/hermes-github-pr-kanban-bridge/scripts/github_pr_kanban_bridge.py --config /home/agent/.hermes/profiles/coder/github-pr-kanban-bridge/config.json
