@@ -8,7 +8,7 @@ Local poller for Danny's Hermes VM workflow. It scans explicitly allowlisted Git
 - Runtime config/state live outside git under the coder profile:
   - Config: `~/.hermes/profiles/coder/github-pr-kanban-bridge/config.json`
   - State: `~/.hermes/profiles/coder/github-pr-kanban-bridge/state.json`
-- User systemd timer runs every 5 minutes.
+- User systemd timer runs every 1 minute.
 
 ## PR gates
 
