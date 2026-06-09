@@ -134,6 +134,8 @@ def load_config(path: Path) -> dict[str, Any]:
     cfg.setdefault("state_retention_days", DEFAULT_STATE_RETENTION_DAYS)
     cfg.setdefault("state_max_seen_entries", DEFAULT_STATE_MAX_SEEN_ENTRIES)
     cfg.setdefault("state_max_baselined_prs", DEFAULT_STATE_MAX_BASELINED_PRS)
+    cfg.setdefault("complete_merged_prs", True)
+    cfg.setdefault("closed_pr_scan_limit", 30)
     return cfg
 
 
@@ -319,6 +321,15 @@ def list_open_prs_from_api(repo: str) -> list[dict[str, Any]]:
     return prs or []
 
 
+def list_closed_prs_from_api(repo: str, limit: int) -> list[dict[str, Any]]:
+    prs = gh_json([
+        "pr", "list", "--repo", repo, "--state", "closed",
+        "--json", "number,title,url,headRefName,body,author,updatedAt,closedAt,mergedAt",
+        "--limit", str(limit),
+    ])
+    return prs or []
+
+
 def task_status(task_id: str, board: str) -> tuple[bool, str | None, str]:
     args = ["hermes", "kanban", "--board", board, "show", "--json", task_id]
     proc = run_cmd(args, check=False)
@@ -341,6 +352,16 @@ def kanban_comment(task_id: str, board: str, author: str, body: str) -> tuple[bo
 
 def kanban_unblock(task_id: str, board: str, reason: str) -> tuple[bool, str]:
     proc = run_cmd(["hermes", "kanban", "--board", board, "unblock", "--reason", reason, task_id], check=False)
+    return proc.returncode == 0, (proc.stderr or proc.stdout).strip()[:500]
+
+
+def kanban_complete(task_id: str, board: str, summary: str, metadata: dict[str, Any]) -> tuple[bool, str]:
+    proc = run_cmd([
+        "hermes", "kanban", "--board", board, "complete",
+        "--summary", summary,
+        "--metadata", json.dumps(metadata, sort_keys=True),
+        task_id,
+    ], check=False)
     return proc.returncode == 0, (proc.stderr or proc.stdout).strip()[:500]
 
 
@@ -402,13 +423,16 @@ def scan(args: argparse.Namespace) -> int:
     state_path = Path(args.state or cfg["state_path"]).expanduser()
     board = args.board or cfg.get("board") or DEFAULT_BOARD
     author = cfg.get("author") or "github-pr-kanban-bridge"
-    state = load_json(state_path, {"version": 1, "seen": {}, "pending_unblocks": {}, "last_scan_at": None, "baselined_prs": {}})
+    state = load_json(state_path, {"version": 1, "seen": {}, "pending_unblocks": {}, "last_scan_at": None, "baselined_prs": {}, "completed_prs": {}})
     seen: dict[str, str] = state.setdefault("seen", {})
     pending_unblocks: dict[str, str] = state.setdefault("pending_unblocks", {})
     baselined_prs: dict[str, str] = state.setdefault("baselined_prs", {})
+    completed_prs: dict[str, str] = state.setdefault("completed_prs", {})
     allow_existing = bool(cfg.get("notify_existing_on_first_scan"))
     ignored_actors = {str(a).lower() for a in cfg.get("ignored_actors", [])}
     ignore_bots = bool(cfg.get("ignore_bot_actors", True))
+    complete_merged_prs = bool(cfg.get("complete_merged_prs", True))
+    closed_pr_scan_limit = positive_int(cfg.get("closed_pr_scan_limit"), 30)
     fixture = load_fixture(Path(args.fixture).expanduser()) if args.fixture else None
     fixture_read_only = fixture is not None and not getattr(args, "fixture_write", False)
     read_only = args.dry_run or fixture_read_only
@@ -457,6 +481,72 @@ def scan(args: argparse.Namespace) -> int:
                 errors.append(f"pending unblock failed for {task_id}: {msg}")
 
     for repo in repos:
+        if complete_merged_prs and fixture is None:
+            try:
+                closed_prs = list_closed_prs_from_api(repo, closed_pr_scan_limit)
+            except Exception as e:
+                msg = f"closed PR scan failed for allowlisted repo {repo}: {e.__class__.__name__}"
+                if args.verbose or args.dry_run:
+                    print(msg)
+                errors.append(msg)
+                gc_safe = False
+                closed_prs = []
+            for pr in closed_prs:
+                number = pr.get("number")
+                merged_at = pr.get("mergedAt") or pr.get("merged_at")
+                if not number or not merged_at:
+                    continue
+                task_id = extract_task_id(pr.get("body"))
+                if not task_id:
+                    continue
+                pr_key = f"{repo}#{number}"
+                if pr_key in completed_prs:
+                    continue
+                exists, status, detail = task_status(task_id, board)
+                if not exists:
+                    if args.dry_run or args.verbose:
+                        print(f"skip merged {repo}#{number}: linked task {task_id} not found ({detail})")
+                    continue
+                if status in {"done", "archived"}:
+                    if not read_only:
+                        completed_prs[pr_key] = merged_at
+                    continue
+                summary = f"GitHub PR merged: {repo}#{number} -> complete {task_id}"
+                planned.append(summary)
+                if read_only:
+                    print(f"{read_only_label} would complete: " + summary)
+                    continue
+                comment = "\n".join([
+                    "GitHub PR merge detected for linked Hermes PR.",
+                    f"Repo: {repo}",
+                    f"PR: #{number} {pr.get('title') or '(untitled)'}",
+                    f"PR URL: {pr.get('url') or ''}",
+                    f"Merged at: {merged_at}",
+                    f"Linked Kanban task: {task_id}",
+                ])
+                ok, msg = kanban_comment(task_id, board, author, comment)
+                if not ok:
+                    errors.append(f"merge comment failed for {pr_key}: {msg}")
+                    continue
+                ok, msg = kanban_complete(
+                    task_id,
+                    board,
+                    f"Completed by GitHub merge of {repo}#{number}: {pr.get('title') or '(untitled)'}",
+                    {
+                        "source": "github-pr-kanban-bridge",
+                        "repo": repo,
+                        "pr_number": number,
+                        "pr_url": pr.get("url") or "",
+                        "merged_at": merged_at,
+                    },
+                )
+                if not ok:
+                    errors.append(f"complete failed for merged {pr_key}: {msg}")
+                    continue
+                completed_prs[pr_key] = merged_at
+                pending_unblocks.pop(task_id, None)
+                print("completed: " + summary)
+
         try:
             prs = iter_fixture_prs(fixture, repo) if fixture is not None else list_open_prs_from_api(repo)
         except Exception as e:  # keep the cron poller quiet/non-spammy by default
@@ -592,11 +682,14 @@ def init_config(path: Path, state_path: Path, board: str, force: bool = False) -
         "state_retention_days": DEFAULT_STATE_RETENTION_DAYS,
         "state_max_seen_entries": DEFAULT_STATE_MAX_SEEN_ENTRIES,
         "state_max_baselined_prs": DEFAULT_STATE_MAX_BASELINED_PRS,
+        "complete_merged_prs": True,
+        "closed_pr_scan_limit": 30,
         "repos": [],
         "notes": [
             "Add explicit repo allowlist entries as owner/name strings, e.g. \"DannyFranca/example\".",
             "Only open PRs with head branches starting Hermes/ and body marker Kanban-Task: t_xxxxxxxx are considered.",
             "State GC keeps active open Hermes PR entries, then prunes inactive seen/baselined_prs entries older than state_retention_days and caps inactive entries by state_max_* limits.",
+            "Merged PRs with a Kanban-Task marker are completed once, tracked by completed_prs in state.",
         ],
     }
     save_json_atomic(path, sample)

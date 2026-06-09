@@ -202,6 +202,7 @@ def test_dry_run_does_not_save_gc_changes(tmp_path, monkeypatch):
 
     monkeypatch.setattr(bridge, "utc_now", lambda: "2026-06-08T00:00:00+00:00")
     monkeypatch.setattr(bridge, "gh_ready", lambda: (True, "ok"))
+    monkeypatch.setattr(bridge, "list_closed_prs_from_api", lambda repo, limit: [])
     monkeypatch.setattr(bridge, "list_open_prs_from_api", lambda repo: [])
 
     rc = bridge.scan(base_args(config, state, fixture=None, dry_run=True))

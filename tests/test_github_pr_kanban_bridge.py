@@ -158,6 +158,7 @@ def test_live_non_dry_scan_still_mutates_and_saves_state(tmp_path, monkeypatch):
 
     mutations = []
     monkeypatch.setattr(bridge, "gh_ready", lambda: (True, "ok"))
+    monkeypatch.setattr(bridge, "list_closed_prs_from_api", lambda repo, limit: [])
     monkeypatch.setattr(bridge, "list_open_prs_from_api", lambda repo: [pr])
     monkeypatch.setattr(bridge, "collect_activities_from_api", lambda repo, number: [activity])
     monkeypatch.setattr(bridge, "task_status", lambda task_id, board: (True, "blocked", ""))
@@ -170,3 +171,39 @@ def test_live_non_dry_scan_still_mutates_and_saves_state(tmp_path, monkeypatch):
     assert [name for name, _ in mutations] == ["comment", "unblock"]
     saved = json.loads(state.read_text(encoding="utf-8"))
     assert "Owner/repo#8:issue-comment:202" in saved["seen"]
+
+
+def test_merged_pr_completes_linked_task_once(tmp_path, monkeypatch):
+    config = tmp_path / "config.json"
+    state = tmp_path / "state.json"
+    write_config(config, state)
+
+    merged_pr = {
+        "number": 9,
+        "title": "Merged PR",
+        "url": "https://github.com/Owner/repo/pull/9",
+        "headRefName": "chore/merged-test",
+        "body": "Kanban-Task: t_deadbeef\n",
+        "mergedAt": "2026-06-09T16:13:12Z",
+    }
+
+    mutations = []
+    monkeypatch.setattr(bridge, "gh_ready", lambda: (True, "ok"))
+    monkeypatch.setattr(bridge, "list_closed_prs_from_api", lambda repo, limit: [merged_pr])
+    monkeypatch.setattr(bridge, "list_open_prs_from_api", lambda repo: [])
+    monkeypatch.setattr(bridge, "task_status", lambda task_id, board: (True, "blocked", ""))
+    monkeypatch.setattr(bridge, "kanban_comment", lambda *args: mutations.append(("comment", args)) or (True, ""))
+    monkeypatch.setattr(bridge, "kanban_complete", lambda *args: mutations.append(("complete", args)) or (True, ""))
+
+    rc = bridge.scan(base_args(config, state, fixture=None))
+
+    assert rc == 0
+    assert [name for name, _ in mutations] == ["comment", "complete"]
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert saved["completed_prs"] == {"Owner/repo#9": "2026-06-09T16:13:12Z"}
+
+    mutations.clear()
+    rc = bridge.scan(base_args(config, state, fixture=None))
+
+    assert rc == 0
+    assert mutations == []

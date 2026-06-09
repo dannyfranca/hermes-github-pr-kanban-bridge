@@ -12,6 +12,8 @@
     "dependabot[bot]"
   ],
   "ignore_bot_actors": true,
+  "complete_merged_prs": true,
+  "closed_pr_scan_limit": 30,
   "state_retention_days": 90,
   "state_max_seen_entries": 5000,
   "state_max_baselined_prs": 1000,
