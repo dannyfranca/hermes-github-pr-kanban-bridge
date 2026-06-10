@@ -198,6 +198,9 @@ def gc_state(state: dict[str, Any], cfg: dict[str, Any], active_pr_keys: set[str
     baselined_prs = state.get("baselined_prs")
     if not isinstance(baselined_prs, dict):
         baselined_prs = {}
+    reaction_acks = state.get("reaction_acks")
+    if not isinstance(reaction_acks, dict):
+        reaction_acks = {}
 
     pruned_seen_map, pruned_seen = prune_timestamped_mapping(
         {str(k): str(v) for k, v in seen.items()},
@@ -215,8 +218,17 @@ def gc_state(state: dict[str, Any], cfg: dict[str, Any], active_pr_keys: set[str
         active_keys=active_pr_keys,
         key_to_active_key=lambda key: key,
     )
+    pruned_reaction_acks_map, pruned_reaction_acks = prune_timestamped_mapping(
+        {str(k): str(v) for k, v in reaction_acks.items()},
+        now=now,
+        retention_days=retention_days,
+        max_entries=max_seen,
+        active_keys=active_pr_keys,
+        key_to_active_key=pr_key_from_activity_key,
+    )
     state["seen"] = pruned_seen_map
     state["baselined_prs"] = pruned_baseline_map
+    state["reaction_acks"] = pruned_reaction_acks_map
     state["last_gc_at"] = now_text
     state["last_gc"] = {
         "retention_days": retention_days,
@@ -225,8 +237,9 @@ def gc_state(state: dict[str, Any], cfg: dict[str, Any], active_pr_keys: set[str
         "active_prs": len(active_pr_keys),
         "pruned_seen": pruned_seen,
         "pruned_baselined_prs": pruned_baselined,
+        "pruned_reaction_acks": pruned_reaction_acks,
     }
-    return {"seen": pruned_seen, "baselined_prs": pruned_baselined}
+    return {"seen": pruned_seen, "baselined_prs": pruned_baselined, "reaction_acks": pruned_reaction_acks}
 
 
 def normalize_repo(entry: Any) -> str | None:
@@ -365,6 +378,108 @@ def kanban_complete(task_id: str, board: str, summary: str, metadata: dict[str, 
     return proc.returncode == 0, (proc.stderr or proc.stdout).strip()[:500]
 
 
+def reaction_endpoint_for_activity(repo: str, activity: Activity) -> str | None:
+    """Return the GitHub reactions endpoint for ackable PR feedback."""
+    match = re.fullmatch(rf"{re.escape(repo)}#\d+:(issue-comment|review-comment):(\d+)", activity.key)
+    if not match:
+        return None
+    kind, comment_id = match.groups()
+    if kind == "issue-comment":
+        return f"repos/{repo}/issues/comments/{comment_id}/reactions"
+    if kind == "review-comment":
+        return f"repos/{repo}/pulls/comments/{comment_id}/reactions"
+    return None
+
+
+def create_eyes_reaction(endpoint: str) -> tuple[bool, str]:
+    proc = run_cmd([
+        "gh",
+        "api",
+        "-X",
+        "POST",
+        endpoint,
+        "-f",
+        "content=eyes",
+        "-H",
+        "Accept: application/vnd.github+json",
+    ], check=False)
+    return proc.returncode == 0, (proc.stderr or proc.stdout).strip()[:500]
+
+
+def ensure_reaction_state(state: dict[str, Any]) -> tuple[dict[str, Any], dict[str, str]]:
+    pending = state.get("pending_reaction_acks")
+    if not isinstance(pending, dict):
+        pending = {}
+        state["pending_reaction_acks"] = pending
+    acks = state.get("reaction_acks")
+    if not isinstance(acks, dict):
+        acks = {}
+        state["reaction_acks"] = acks
+    return pending, acks
+
+
+def queue_reaction_ack(
+    state: dict[str, Any],
+    repo: str,
+    task_id: str,
+    activity: Activity,
+    *,
+    ready: bool,
+) -> None:
+    endpoint = reaction_endpoint_for_activity(repo, activity)
+    if endpoint is None:
+        return
+    pending, acks = ensure_reaction_state(state)
+    if activity.key in acks:
+        pending.pop(activity.key, None)
+        return
+    existing = pending.get(activity.key)
+    if not isinstance(existing, dict):
+        existing = {}
+    existing.update({
+        "repo": repo,
+        "task_id": task_id,
+        "endpoint": endpoint,
+        "observed_at": activity.created_at or utc_now(),
+        "ready": bool(existing.get("ready")) or ready,
+    })
+    pending[activity.key] = existing
+
+
+def mark_reaction_acks_ready_for_task(state: dict[str, Any], task_id: str) -> None:
+    pending, _acks = ensure_reaction_state(state)
+    for data in pending.values():
+        if isinstance(data, dict) and data.get("task_id") == task_id:
+            data["ready"] = True
+
+
+def process_ready_reaction_acks(state: dict[str, Any], *, task_id: str | None = None) -> list[str]:
+    pending, acks = ensure_reaction_state(state)
+    errors: list[str] = []
+    for key, data in list(pending.items()):
+        if not isinstance(data, dict):
+            errors.append(f"reaction ack {key} has invalid pending state")
+            continue
+        if task_id is not None and data.get("task_id") != task_id:
+            continue
+        if not data.get("ready"):
+            continue
+        if key in acks:
+            pending.pop(key, None)
+            continue
+        endpoint = data.get("endpoint")
+        if not isinstance(endpoint, str) or not endpoint:
+            errors.append(f"reaction ack {key} missing endpoint")
+            continue
+        ok, msg = create_eyes_reaction(endpoint)
+        if not ok:
+            errors.append(f"reaction ack failed for {key}: {msg}")
+            continue
+        acks[key] = str(data.get("observed_at") or utc_now())
+        pending.pop(key, None)
+    return errors
+
+
 def activity_comment(repo: str, pr: dict[str, Any], task_id: str, activity: Activity) -> str:
     title = pr.get("title") or "(untitled)"
     number = pr.get("number")
@@ -423,9 +538,19 @@ def scan(args: argparse.Namespace) -> int:
     state_path = Path(args.state or cfg["state_path"]).expanduser()
     board = args.board or cfg.get("board") or DEFAULT_BOARD
     author = cfg.get("author") or "github-pr-kanban-bridge"
-    state = load_json(state_path, {"version": 1, "seen": {}, "pending_unblocks": {}, "last_scan_at": None, "baselined_prs": {}, "completed_prs": {}})
+    state = load_json(state_path, {
+        "version": 1,
+        "seen": {},
+        "pending_unblocks": {},
+        "pending_reaction_acks": {},
+        "reaction_acks": {},
+        "last_scan_at": None,
+        "baselined_prs": {},
+        "completed_prs": {},
+    })
     seen: dict[str, str] = state.setdefault("seen", {})
     pending_unblocks: dict[str, str] = state.setdefault("pending_unblocks", {})
+    ensure_reaction_state(state)
     baselined_prs: dict[str, str] = state.setdefault("baselined_prs", {})
     completed_prs: dict[str, str] = state.setdefault("completed_prs", {})
     allow_existing = bool(cfg.get("notify_existing_on_first_scan"))
@@ -437,6 +562,7 @@ def scan(args: argparse.Namespace) -> int:
     fixture_read_only = fixture is not None and not getattr(args, "fixture_write", False)
     read_only = args.dry_run or fixture_read_only
     read_only_label = "DRY-RUN" if args.dry_run else "FIXTURE-READONLY"
+    acknowledge_reactions = fixture is None
 
     repos = [r for r in (normalize_repo(x) for x in cfg.get("repos", [])) if r]
     if not cfg.get("enabled", True):
@@ -460,6 +586,9 @@ def scan(args: argparse.Namespace) -> int:
     active_pr_keys: set[str] = set()
     gc_safe = True
 
+    if acknowledge_reactions and not read_only:
+        errors.extend(process_ready_reaction_acks(state))
+
     if pending_unblocks:
         for task_id, reason in list(pending_unblocks.items()):
             if read_only:
@@ -476,6 +605,9 @@ def scan(args: argparse.Namespace) -> int:
             ok, msg = kanban_unblock(task_id, board, reason)
             if ok:
                 pending_unblocks.pop(task_id, None)
+                if acknowledge_reactions:
+                    mark_reaction_acks_ready_for_task(state, task_id)
+                    errors.extend(process_ready_reaction_acks(state, task_id=task_id))
                 print(f"unblocked pending task: {task_id}")
             else:
                 errors.append(f"pending unblock failed for {task_id}: {msg}")
@@ -634,6 +766,9 @@ def scan(args: argparse.Namespace) -> int:
             if not ok:
                 errors.append(f"comment failed for {first.key}: {msg}")
                 continue
+            if acknowledge_reactions:
+                for activity in unseen:
+                    queue_reaction_ack(state, repo, task_id, activity, ready=False)
             reason = f"GitHub PR activity on {repo}#{number}; wake worker to address feedback"
             ok, msg = kanban_unblock(task_id, board, reason)
             for activity in unseen:
@@ -643,6 +778,9 @@ def scan(args: argparse.Namespace) -> int:
                 errors.append(f"unblock failed for {first.key}; queued pending retry: {msg}")
                 continue
             pending_unblocks.pop(task_id, None)
+            if acknowledge_reactions:
+                mark_reaction_acks_ready_for_task(state, task_id)
+                errors.extend(process_ready_reaction_acks(state, task_id=task_id))
             print("unblocked: " + summary)
 
     if not read_only:
@@ -690,6 +828,7 @@ def init_config(path: Path, state_path: Path, board: str, force: bool = False) -
             "Only open PRs with head branches starting Hermes/ and body marker Kanban-Task: t_xxxxxxxx are considered.",
             "State GC keeps active open Hermes PR entries, then prunes inactive seen/baselined_prs entries older than state_retention_days and caps inactive entries by state_max_* limits.",
             "Merged PRs with a Kanban-Task marker are completed once, tracked by completed_prs in state.",
+            "After successful comment+unblock handling, reaction_acks/pending_reaction_acks dedupe GitHub eyes acknowledgements for issue and review comments.",
         ],
     }
     save_json_atomic(path, sample)

@@ -125,6 +125,7 @@ def test_fixture_write_flag_allows_explicit_test_mutations(tmp_path, monkeypatch
     monkeypatch.setattr(bridge, "task_status", lambda task_id, board: (True, "blocked", ""))
     monkeypatch.setattr(bridge, "kanban_comment", lambda *args: mutations.append(("comment", args)) or (True, ""))
     monkeypatch.setattr(bridge, "kanban_unblock", lambda *args: mutations.append(("unblock", args)) or (True, ""))
+    monkeypatch.setattr(bridge, "create_eyes_reaction", lambda endpoint: (_ for _ in ()).throw(AssertionError("fixture-write must not call GitHub reactions")))
 
     rc = bridge.scan(base_args(config, state, fixture, fixture_write=True))
 
@@ -164,6 +165,7 @@ def test_live_non_dry_scan_still_mutates_and_saves_state(tmp_path, monkeypatch):
     monkeypatch.setattr(bridge, "task_status", lambda task_id, board: (True, "blocked", ""))
     monkeypatch.setattr(bridge, "kanban_comment", lambda *args: mutations.append(("comment", args)) or (True, ""))
     monkeypatch.setattr(bridge, "kanban_unblock", lambda *args: mutations.append(("unblock", args)) or (True, ""))
+    monkeypatch.setattr(bridge, "create_eyes_reaction", lambda endpoint: (True, "created"))
 
     rc = bridge.scan(base_args(config, state, fixture=None))
 
@@ -171,6 +173,235 @@ def test_live_non_dry_scan_still_mutates_and_saves_state(tmp_path, monkeypatch):
     assert [name for name, _ in mutations] == ["comment", "unblock"]
     saved = json.loads(state.read_text(encoding="utf-8"))
     assert "Owner/repo#8:issue-comment:202" in saved["seen"]
+
+
+def test_successful_unblock_acknowledges_issue_and_review_comments_after_kanban_mutations(tmp_path, monkeypatch):
+    config = tmp_path / "config.json"
+    state = tmp_path / "state.json"
+    write_config(config, state)
+
+    pr = {
+        "number": 8,
+        "title": "Live PR",
+        "url": "https://github.com/Owner/repo/pull/8",
+        "headRefName": "Hermes/live-test",
+        "body": "Kanban-Task: t_deadbeef\n",
+    }
+    activities = [
+        bridge.Activity(
+            key="Owner/repo#8:issue-comment:202",
+            event_type="PR issue comment",
+            action="created",
+            actor="human-reviewer",
+            actor_type="User",
+            url="https://github.com/Owner/repo/pull/8#issuecomment-202",
+            created_at="2026-06-08T00:00:00Z",
+        ),
+        bridge.Activity(
+            key="Owner/repo#8:review-comment:303",
+            event_type="PR review comment",
+            action="created",
+            actor="human-reviewer",
+            actor_type="User",
+            url="https://github.com/Owner/repo/pull/8#discussion_r303",
+            created_at="2026-06-08T00:01:00Z",
+        ),
+    ]
+
+    operations = []
+    monkeypatch.setattr(bridge, "gh_ready", lambda: (True, "ok"))
+    monkeypatch.setattr(bridge, "list_closed_prs_from_api", lambda repo, limit: [])
+    monkeypatch.setattr(bridge, "list_open_prs_from_api", lambda repo: [pr])
+    monkeypatch.setattr(bridge, "collect_activities_from_api", lambda repo, number: activities)
+    monkeypatch.setattr(bridge, "task_status", lambda task_id, board: (True, "blocked", ""))
+    monkeypatch.setattr(bridge, "kanban_comment", lambda *args: operations.append(("comment", args)) or (True, ""))
+    monkeypatch.setattr(bridge, "kanban_unblock", lambda *args: operations.append(("unblock", args)) or (True, ""))
+    monkeypatch.setattr(bridge, "create_eyes_reaction", lambda endpoint: operations.append(("reaction", endpoint)) or (True, "created"), raising=False)
+
+    rc = bridge.scan(base_args(config, state, fixture=None))
+
+    assert rc == 0
+    assert [op[0] for op in operations] == ["comment", "unblock", "reaction", "reaction"]
+    assert operations[2][1] == "repos/Owner/repo/issues/comments/202/reactions"
+    assert operations[3][1] == "repos/Owner/repo/pulls/comments/303/reactions"
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert saved["reaction_acks"] == {
+        "Owner/repo#8:issue-comment:202": "2026-06-08T00:00:00Z",
+        "Owner/repo#8:review-comment:303": "2026-06-08T00:01:00Z",
+    }
+    assert saved["pending_reaction_acks"] == {}
+
+
+def test_existing_eyes_reaction_is_recorded_once_and_not_retried(tmp_path, monkeypatch):
+    config = tmp_path / "config.json"
+    state = tmp_path / "state.json"
+    write_config(config, state)
+
+    pr = {
+        "number": 8,
+        "title": "Live PR",
+        "url": "https://github.com/Owner/repo/pull/8",
+        "headRefName": "Hermes/live-test",
+        "body": "Kanban-Task: t_deadbeef\n",
+    }
+    activity = bridge.Activity(
+        key="Owner/repo#8:issue-comment:202",
+        event_type="PR issue comment",
+        action="created",
+        actor="human-reviewer",
+        actor_type="User",
+        url="https://github.com/Owner/repo/pull/8#issuecomment-202",
+        created_at="2026-06-08T00:00:00Z",
+    )
+
+    reaction_calls = []
+    monkeypatch.setattr(bridge, "gh_ready", lambda: (True, "ok"))
+    monkeypatch.setattr(bridge, "list_closed_prs_from_api", lambda repo, limit: [])
+    monkeypatch.setattr(bridge, "list_open_prs_from_api", lambda repo: [pr])
+    monkeypatch.setattr(bridge, "collect_activities_from_api", lambda repo, number: [activity])
+    monkeypatch.setattr(bridge, "task_status", lambda task_id, board: (True, "blocked", ""))
+    monkeypatch.setattr(bridge, "kanban_comment", lambda *args: (True, ""))
+    monkeypatch.setattr(bridge, "kanban_unblock", lambda *args: (True, ""))
+    monkeypatch.setattr(bridge, "create_eyes_reaction", lambda endpoint: reaction_calls.append(endpoint) or (True, "already exists"), raising=False)
+
+    first_rc = bridge.scan(base_args(config, state, fixture=None))
+    second_rc = bridge.scan(base_args(config, state, fixture=None))
+
+    assert first_rc == 0
+    assert second_rc == 0
+    assert reaction_calls == ["repos/Owner/repo/issues/comments/202/reactions"]
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert saved["reaction_acks"] == {"Owner/repo#8:issue-comment:202": "2026-06-08T00:00:00Z"}
+
+
+def test_reaction_failure_is_queued_without_repeating_kanban_unblock(tmp_path, monkeypatch):
+    config = tmp_path / "config.json"
+    state = tmp_path / "state.json"
+    write_config(config, state)
+
+    pr = {
+        "number": 8,
+        "title": "Live PR",
+        "url": "https://github.com/Owner/repo/pull/8",
+        "headRefName": "Hermes/live-test",
+        "body": "Kanban-Task: t_deadbeef\n",
+    }
+    activity = bridge.Activity(
+        key="Owner/repo#8:issue-comment:202",
+        event_type="PR issue comment",
+        action="created",
+        actor="human-reviewer",
+        actor_type="User",
+        url="https://github.com/Owner/repo/pull/8#issuecomment-202",
+        created_at="2026-06-08T00:00:00Z",
+    )
+
+    kanban_ops = []
+    reaction_results = [(False, "api down"), (True, "created")]
+    monkeypatch.setattr(bridge, "gh_ready", lambda: (True, "ok"))
+    monkeypatch.setattr(bridge, "list_closed_prs_from_api", lambda repo, limit: [])
+    monkeypatch.setattr(bridge, "list_open_prs_from_api", lambda repo: [pr])
+    monkeypatch.setattr(bridge, "collect_activities_from_api", lambda repo, number: [activity])
+    monkeypatch.setattr(bridge, "task_status", lambda task_id, board: (True, "blocked", ""))
+    monkeypatch.setattr(bridge, "kanban_comment", lambda *args: kanban_ops.append("comment") or (True, ""))
+    monkeypatch.setattr(bridge, "kanban_unblock", lambda *args: kanban_ops.append("unblock") or (True, ""))
+    monkeypatch.setattr(bridge, "create_eyes_reaction", lambda endpoint: reaction_results.pop(0), raising=False)
+
+    first_rc = bridge.scan(base_args(config, state, fixture=None))
+    after_failure = json.loads(state.read_text(encoding="utf-8"))
+    second_rc = bridge.scan(base_args(config, state, fixture=None))
+
+    assert first_rc == 1
+    assert after_failure["seen"] == {"Owner/repo#8:issue-comment:202": "2026-06-08T00:00:00Z"}
+    assert after_failure["pending_reaction_acks"]["Owner/repo#8:issue-comment:202"]["ready"] is True
+    assert second_rc == 0
+    assert kanban_ops == ["comment", "unblock"]
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert saved["pending_reaction_acks"] == {}
+    assert saved["reaction_acks"] == {"Owner/repo#8:issue-comment:202": "2026-06-08T00:00:00Z"}
+
+
+def test_reaction_is_not_attempted_when_kanban_comment_or_unblock_fails(tmp_path, monkeypatch):
+    config = tmp_path / "config.json"
+    state = tmp_path / "state.json"
+    write_config(config, state)
+
+    pr = {
+        "number": 8,
+        "title": "Live PR",
+        "url": "https://github.com/Owner/repo/pull/8",
+        "headRefName": "Hermes/live-test",
+        "body": "Kanban-Task: t_deadbeef\n",
+    }
+    activity = bridge.Activity(
+        key="Owner/repo#8:issue-comment:202",
+        event_type="PR issue comment",
+        action="created",
+        actor="human-reviewer",
+        actor_type="User",
+        url="https://github.com/Owner/repo/pull/8#issuecomment-202",
+        created_at="2026-06-08T00:00:00Z",
+    )
+
+    reaction_calls = []
+    monkeypatch.setattr(bridge, "gh_ready", lambda: (True, "ok"))
+    monkeypatch.setattr(bridge, "list_closed_prs_from_api", lambda repo, limit: [])
+    monkeypatch.setattr(bridge, "list_open_prs_from_api", lambda repo: [pr])
+    monkeypatch.setattr(bridge, "collect_activities_from_api", lambda repo, number: [activity])
+    monkeypatch.setattr(bridge, "task_status", lambda task_id, board: (True, "blocked", ""))
+    monkeypatch.setattr(bridge, "kanban_comment", lambda *args: (True, ""))
+    monkeypatch.setattr(bridge, "kanban_unblock", lambda *args: (False, "blocked by test"))
+    monkeypatch.setattr(bridge, "create_eyes_reaction", lambda endpoint: reaction_calls.append(endpoint) or (True, "created"), raising=False)
+
+    rc = bridge.scan(base_args(config, state, fixture=None))
+
+    assert rc == 1
+    assert reaction_calls == []
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert saved["pending_reaction_acks"]["Owner/repo#8:issue-comment:202"]["ready"] is False
+
+
+def test_reaction_is_not_queued_or_attempted_when_kanban_comment_fails(tmp_path, monkeypatch):
+    config = tmp_path / "config.json"
+    state = tmp_path / "state.json"
+    write_config(config, state)
+
+    pr = {
+        "number": 8,
+        "title": "Live PR",
+        "url": "https://github.com/Owner/repo/pull/8",
+        "headRefName": "Hermes/live-test",
+        "body": "Kanban-Task: t_deadbeef\n",
+    }
+    activity = bridge.Activity(
+        key="Owner/repo#8:issue-comment:202",
+        event_type="PR issue comment",
+        action="created",
+        actor="human-reviewer",
+        actor_type="User",
+        url="https://github.com/Owner/repo/pull/8#issuecomment-202",
+        created_at="2026-06-08T00:00:00Z",
+    )
+
+    reaction_calls = []
+    unblock_calls = []
+    monkeypatch.setattr(bridge, "gh_ready", lambda: (True, "ok"))
+    monkeypatch.setattr(bridge, "list_closed_prs_from_api", lambda repo, limit: [])
+    monkeypatch.setattr(bridge, "list_open_prs_from_api", lambda repo: [pr])
+    monkeypatch.setattr(bridge, "collect_activities_from_api", lambda repo, number: [activity])
+    monkeypatch.setattr(bridge, "task_status", lambda task_id, board: (True, "blocked", ""))
+    monkeypatch.setattr(bridge, "kanban_comment", lambda *args: (False, "comment failed by test"))
+    monkeypatch.setattr(bridge, "kanban_unblock", lambda *args: unblock_calls.append(args) or (True, ""))
+    monkeypatch.setattr(bridge, "create_eyes_reaction", lambda endpoint: reaction_calls.append(endpoint) or (True, "created"), raising=False)
+
+    rc = bridge.scan(base_args(config, state, fixture=None))
+
+    assert rc == 1
+    assert unblock_calls == []
+    assert reaction_calls == []
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert saved["pending_reaction_acks"] == {}
+    assert saved["reaction_acks"] == {}
 
 
 def test_merged_pr_completes_linked_task_once(tmp_path, monkeypatch):
