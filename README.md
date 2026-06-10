@@ -68,6 +68,11 @@ Add exact owner/repo strings:
 "repos": ["dannyfranca/hermes-github-pr-kanban-bridge"]
 ```
 
+## Project layout
+
+- `scripts/github_pr_kanban_bridge.py` remains the stable CLI/systemd entrypoint and legacy import surface.
+- `scripts/gh_pr_kanban_bridge/` contains the implementation split by concern: config, JSON state IO, GitHub API access, Kanban CLI access, fixtures, reaction acknowledgements, state retention, and scan orchestration.
+
 ## Commands
 
 Run tests:
