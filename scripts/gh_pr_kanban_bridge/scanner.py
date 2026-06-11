@@ -11,6 +11,7 @@ from .common import (
     HERMES_BRANCH_PREFIX,
     actor_is_ignored,
     activity_comment,
+    _github_reference,
     extract_task_id,
     normalize_repo,
     positive_int,
@@ -277,7 +278,7 @@ def scan(args: argparse.Namespace) -> int:
             comment = activity_comment(repo, pr, task_id, first)
             if len(unseen) > 1:
                 extra = "\nAdditional unseen activity in this scan:\n" + "\n".join(
-                    f"- {a.event_type} / {a.action} by {a.actor}: {a.url}" for a in unseen[1:]
+                    f"- {a.event_type} / {a.action} by {a.actor}: {_github_reference(a.url)}" for a in unseen[1:]
                 )
                 comment += extra
             ok, msg = kanban_comment(task_id, board, author, comment)

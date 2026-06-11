@@ -171,6 +171,11 @@ def test_live_non_dry_scan_still_mutates_and_saves_state(tmp_path, monkeypatch):
 
     assert rc == 0
     assert [name for name, _ in mutations] == ["comment", "unblock"]
+    comment_body = mutations[0][1][3]
+    assert "https://github.com/Owner/repo/pull/8" not in comment_body
+    assert "PR ref: github:Owner/repo/pull/8" in comment_body
+    assert "Event ref: github:Owner/repo/pull/8#issuecomment-202" in comment_body
+    assert "Collaboration requirement:" in comment_body
     saved = json.loads(state.read_text(encoding="utf-8"))
     assert "Owner/repo#8:issue-comment:202" in saved["seen"]
 
@@ -222,6 +227,9 @@ def test_successful_unblock_acknowledges_issue_and_review_comments_after_kanban_
 
     assert rc == 0
     assert [op[0] for op in operations] == ["comment", "unblock", "reaction", "reaction"]
+    comment_body = operations[0][1][3]
+    assert "https://github.com/Owner/repo/pull/8" not in comment_body
+    assert "github:Owner/repo/pull/8#discussion_r303" in comment_body
     assert operations[2][1] == "repos/Owner/repo/issues/comments/202/reactions"
     assert operations[3][1] == "repos/Owner/repo/pulls/comments/303/reactions"
     saved = json.loads(state.read_text(encoding="utf-8"))

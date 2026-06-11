@@ -100,19 +100,39 @@ def user_login_and_type(obj: dict[str, Any]) -> tuple[str, str]:
     return (user.get("login") or "unknown", user.get("type") or "")
 
 
+def _github_reference(url: str) -> str:
+    """Return a human-usable GitHub reference without a raw PR URL.
+
+    Hermes Kanban's dispatcher has an ``active_pr`` respawn guard that scans
+    recent task comments for raw ``https://github.com/.../pull/<n>`` URLs. The
+    bridge writes the wake-up comment immediately before unblocking a card; if
+    we include raw PR URLs here, the dispatcher can unblock the card and then
+    refuse to spawn the worker because its own bridge comment looks like an
+    active-PR handoff. Keep PR/event references copyable enough for humans and
+    workers while avoiding that guard pattern.
+    """
+    if not url:
+        return ""
+    text = str(url).strip()
+    text = re.sub(r"^https?://github\.com/", "github:", text, flags=re.IGNORECASE)
+    return text
+
+
 def activity_comment(repo: str, pr: dict[str, Any], task_id: str, activity: Activity) -> str:
     title = pr.get("title") or "(untitled)"
     number = pr.get("number")
-    pr_url = pr.get("url") or ""
+    pr_ref = _github_reference(pr.get("url") or "")
+    event_ref = _github_reference(activity.url)
     lines = [
         "GitHub PR activity detected for linked Hermes PR.",
         f"Repo: {repo}",
         f"PR: #{number} {title}",
-        f"PR URL: {pr_url}",
+        f"PR ref: {pr_ref}",
         f"Actor: {activity.actor}",
         f"Event: {activity.event_type} / {activity.action}",
-        f"Event URL: {activity.url}",
+        f"Event ref: {event_ref}",
         "Instruction: address the feedback on the same PR/branch; do not open a replacement PR unless the human asks.",
+        "Collaboration requirement: first post a short acknowledgement on the PR/review thread so the reviewer knows Hermes saw the feedback, then post a final PR comment/reply summarizing what changed, what tests ran, and any remaining question. Do not rely on Kanban/session context as the only communication surface.",
         f"Linked Kanban task: {task_id}",
     ]
     return "\n".join(lines)
