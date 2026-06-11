@@ -23,6 +23,8 @@ DEFAULT_BOARD = os.environ.get("HERMES_KANBAN_BOARD", "default")
 DEFAULT_STATE_RETENTION_DAYS = 90
 DEFAULT_STATE_MAX_SEEN_ENTRIES = 5000
 DEFAULT_STATE_MAX_BASELINED_PRS = 1000
+DEFAULT_GITHUB_APP_HELPER = "/home/agent/bin/hermes-gh-app"
+DEFAULT_GITHUB_APP_CONFIG = "/home/agent/.hermes/github-apps.json"
 
 
 @dataclass(frozen=True)

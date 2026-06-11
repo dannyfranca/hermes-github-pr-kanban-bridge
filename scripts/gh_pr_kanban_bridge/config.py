@@ -6,6 +6,8 @@ from typing import Any
 
 from .common import (
     DEFAULT_BOARD,
+    DEFAULT_GITHUB_APP_CONFIG,
+    DEFAULT_GITHUB_APP_HELPER,
     DEFAULT_STATE,
     DEFAULT_STATE_MAX_BASELINED_PRS,
     DEFAULT_STATE_MAX_SEEN_ENTRIES,
@@ -30,6 +32,7 @@ def load_config(path: Path) -> dict[str, Any]:
     cfg.setdefault("state_max_baselined_prs", DEFAULT_STATE_MAX_BASELINED_PRS)
     cfg.setdefault("complete_merged_prs", True)
     cfg.setdefault("closed_pr_scan_limit", 30)
+    cfg.setdefault("auth", {"mode": "auto"})
     return cfg
 
 
@@ -51,6 +54,13 @@ def init_config(path: Path, state_path: Path, board: str, force: bool = False) -
         "state_max_baselined_prs": DEFAULT_STATE_MAX_BASELINED_PRS,
         "complete_merged_prs": True,
         "closed_pr_scan_limit": 30,
+        "auth": {
+            "mode": "auto",
+            "github_app": {
+                "helper": DEFAULT_GITHUB_APP_HELPER,
+                "config": DEFAULT_GITHUB_APP_CONFIG,
+            },
+        },
         "repos": [],
         "notes": [
             "Add explicit repo allowlist entries as owner/name strings, e.g. \"DannyFranca/example\".",
@@ -58,6 +68,7 @@ def init_config(path: Path, state_path: Path, board: str, force: bool = False) -
             "State GC keeps active open Hermes PR entries, then prunes inactive seen/baselined_prs entries older than state_retention_days and caps inactive entries by state_max_* limits.",
             "Merged PRs with a Kanban-Task marker are completed once, tracked by completed_prs in state.",
             "After successful comment+unblock handling, reaction_acks/pending_reaction_acks dedupe GitHub eyes acknowledgements for issue and review comments.",
+            "auth.mode auto prefers GH_TOKEN/GITHUB_TOKEN, then gh auth, then repo-scoped GitHub App tokens via hermes-gh-app.",
         ],
     }
     save_json_atomic(path, sample)

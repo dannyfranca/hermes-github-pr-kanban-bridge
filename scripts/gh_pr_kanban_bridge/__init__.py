@@ -1,6 +1,7 @@
 """GitHub PR activity -> Hermes Kanban bridge package."""
 from __future__ import annotations
 
+from .auth import AuthContext, auth_settings, github_app_settings, mint_github_app_token, resolve_repo_auth
 from .commands import run_cmd
 from .common import *
 from .config import init_config, load_config
@@ -13,6 +14,7 @@ from .github_api import (
     list_closed_prs_from_api,
     list_open_prs_from_api,
     reaction_endpoint_for_activity,
+    set_current_gh_env,
 )
 from .json_io import load_json, save_json_atomic
 from .kanban_cli import kanban_comment, kanban_complete, kanban_unblock, task_status
