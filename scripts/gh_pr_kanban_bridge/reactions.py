@@ -54,7 +54,12 @@ def mark_reaction_acks_ready_for_task(state: dict[str, Any], task_id: str) -> No
             data["ready"] = True
 
 
-def process_ready_reaction_acks(state: dict[str, Any], *, task_id: str | None = None) -> list[str]:
+def process_ready_reaction_acks(
+    state: dict[str, Any],
+    *,
+    task_id: str | None = None,
+    repo: str | None = None,
+) -> list[str]:
     pending, acks = ensure_reaction_state(state)
     errors: list[str] = []
     for key, data in list(pending.items()):
@@ -62,6 +67,8 @@ def process_ready_reaction_acks(state: dict[str, Any], *, task_id: str | None = 
             errors.append(f"reaction ack {key} has invalid pending state")
             continue
         if task_id is not None and data.get("task_id") != task_id:
+            continue
+        if repo is not None and data.get("repo") != repo:
             continue
         if not data.get("ready"):
             continue
