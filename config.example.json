@@ -4,7 +4,8 @@
   "enabled": true,
   "notes": [
     "Copy this file to ~/.hermes/profiles/coder/github-pr-kanban-bridge/config.json and edit repos.",
-    "Only open PRs with head branches starting Hermes/ and body marker Kanban-Task: t_xxxxxxxx are considered."
+    "Only open PRs with head branches starting Hermes/ and body marker Kanban-Task: t_xxxxxxxx are considered.",
+    "auth.mode auto prefers GH_TOKEN/GITHUB_TOKEN, then gh auth, then repo-scoped GitHub App tokens via hermes-gh-app."
   ],
   "notify_existing_on_first_scan": false,
   "ignored_actors": [
@@ -14,6 +15,13 @@
   "ignore_bot_actors": true,
   "complete_merged_prs": true,
   "closed_pr_scan_limit": 30,
+  "auth": {
+    "mode": "auto",
+    "github_app": {
+      "helper": "/home/agent/bin/hermes-gh-app",
+      "config": "/home/agent/.hermes/github-apps.json"
+    }
+  },
   "state_retention_days": 90,
   "state_max_seen_entries": 5000,
   "state_max_baselined_prs": 1000,
