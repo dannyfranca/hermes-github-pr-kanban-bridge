@@ -16,13 +16,29 @@ from .common import (
     positive_int,
     utc_now,
 )
+from .auth import AuthContext, resolve_repo_auth
 from .config import load_config
 from .fixtures import fixture_activities, iter_fixture_prs, load_fixture
-from .github_api import collect_activities_from_api, gh_ready, list_closed_prs_from_api, list_open_prs_from_api
+from .github_api import collect_activities_from_api, list_closed_prs_from_api, list_open_prs_from_api, set_current_gh_env
 from .json_io import load_json, save_json_atomic
 from .kanban_cli import kanban_comment, kanban_complete, kanban_unblock, task_status
 from .reactions import ensure_reaction_state, mark_reaction_acks_ready_for_task, process_ready_reaction_acks, queue_reaction_ack
 from .state import gc_state
+
+
+def _process_ready_reaction_acks(
+    state: dict[str, Any],
+    *,
+    task_id: str | None = None,
+    repo: str | None = None,
+) -> list[str]:
+    """Call reaction processing while preserving legacy monkeypatch compatibility."""
+    try:
+        return process_ready_reaction_acks(state, task_id=task_id, repo=repo)
+    except TypeError as e:
+        if "repo" not in str(e):
+            raise
+        return process_ready_reaction_acks(state, task_id=task_id)
 
 
 def scan(args: argparse.Namespace) -> int:
@@ -67,20 +83,23 @@ def scan(args: argparse.Namespace) -> int:
             print(f"no allowlisted repos in {config_path}")
         return 0
 
+    repo_auth: dict[str, AuthContext] = {}
+    auth_failures: list[str] = []
     if fixture is None:
-        ok, msg = gh_ready()
-        if not ok:
+        for repo in repos:
+            auth_context, msg = resolve_repo_auth(cfg, repo)
+            if auth_context is None:
+                auth_failures.append(f"auth unavailable for {repo}: {msg}" if not msg.startswith("auth unavailable") else msg)
+                continue
+            repo_auth[repo] = auth_context
             if args.verbose or args.dry_run:
-                print(msg)
-            return 2 if args.strict else 0
+                print(f"auth for {repo}: {auth_context.source}")
 
     planned: list[str] = []
-    errors: list[str] = []
+    errors: list[str] = list(auth_failures)
+    auth_failed = bool(auth_failures)
     active_pr_keys: set[str] = set()
-    gc_safe = True
-
-    if acknowledge_reactions and not read_only:
-        errors.extend(process_ready_reaction_acks(state))
+    gc_safe = not auth_failed
 
     if pending_unblocks:
         for task_id, reason in list(pending_unblocks.items()):
@@ -100,12 +119,18 @@ def scan(args: argparse.Namespace) -> int:
                 pending_unblocks.pop(task_id, None)
                 if acknowledge_reactions:
                     mark_reaction_acks_ready_for_task(state, task_id)
-                    errors.extend(process_ready_reaction_acks(state, task_id=task_id))
                 print(f"unblocked pending task: {task_id}")
             else:
                 errors.append(f"pending unblock failed for {task_id}: {msg}")
 
     for repo in repos:
+        if fixture is None:
+            auth_context = repo_auth.get(repo)
+            if auth_context is None:
+                continue
+            set_current_gh_env(auth_context.env)
+            if acknowledge_reactions and not read_only:
+                errors.extend(_process_ready_reaction_acks(state, repo=repo))
         if complete_merged_prs and fixture is None:
             try:
                 closed_prs = list_closed_prs_from_api(repo, closed_pr_scan_limit)
@@ -273,8 +298,11 @@ def scan(args: argparse.Namespace) -> int:
             pending_unblocks.pop(task_id, None)
             if acknowledge_reactions:
                 mark_reaction_acks_ready_for_task(state, task_id)
-                errors.extend(process_ready_reaction_acks(state, task_id=task_id))
+                errors.extend(_process_ready_reaction_acks(state, task_id=task_id, repo=repo))
             print("unblocked: " + summary)
+
+    if fixture is None:
+        set_current_gh_env(None)
 
     if not read_only:
         now_text = utc_now()
@@ -291,7 +319,7 @@ def scan(args: argparse.Namespace) -> int:
     if errors:
         for e in errors:
             print(e, file=sys.stderr)
-        return 1 if args.strict else 0
+        return 2 if auth_failed else (1 if args.strict else 0)
     if args.dry_run and not planned:
         print("dry-run complete: no Kanban mutations would be made")
     return 0

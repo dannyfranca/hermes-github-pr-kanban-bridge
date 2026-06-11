@@ -11,6 +11,7 @@ if str(_SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 from gh_pr_kanban_bridge import *  # noqa: F401,F403 - compatibility re-exports
+from gh_pr_kanban_bridge import auth as _auth
 from gh_pr_kanban_bridge import commands as _commands
 from gh_pr_kanban_bridge import github_api as _github_api
 from gh_pr_kanban_bridge import kanban_cli as _kanban_cli
@@ -38,6 +39,9 @@ from gh_pr_kanban_bridge.reactions import (
 from gh_pr_kanban_bridge.scanner import scan as _package_scan
 
 
+shutil = _auth.shutil
+
+
 _DEFAULT_COMPAT_RUN_CMD = None
 _DEFAULT_COMPAT_GH_JSON = None
 
@@ -49,9 +53,19 @@ def _effective_run_cmd():
 
 def _sync_command_runner() -> None:
     runner = _effective_run_cmd()
-    _commands.run_cmd = runner
-    _github_api.run_cmd = runner
-    _kanban_cli.run_cmd = runner
+
+    def compat_runner(args, *, check=True, env_overrides=None):
+        try:
+            return runner(args, check=check, env_overrides=env_overrides)
+        except TypeError as e:
+            if "env_overrides" not in str(e):
+                raise
+            return runner(args, check=check)
+
+    _auth.run_cmd = compat_runner
+    _commands.run_cmd = compat_runner
+    _github_api.run_cmd = compat_runner
+    _kanban_cli.run_cmd = compat_runner
 
 
 def _sync_compat_overrides() -> None:
@@ -65,6 +79,10 @@ def _sync_compat_overrides() -> None:
     globals_ = globals()
     _sync_command_runner()
     _sync_github_json()
+    if "gh_ready" in globals_:
+        _auth.gh_ready = globals_["gh_ready"]
+    if "shutil" in globals_:
+        _auth.shutil = globals_["shutil"]
     for name in (
         "collect_activities_from_api",
         "gh_ready",
@@ -76,6 +94,7 @@ def _sync_compat_overrides() -> None:
         "mark_reaction_acks_ready_for_task",
         "process_ready_reaction_acks",
         "queue_reaction_ack",
+        "resolve_repo_auth",
         "task_status",
         "utc_now",
     ):
@@ -92,8 +111,8 @@ def _sync_compat_overrides() -> None:
         setattr(_github_api, "create_eyes_reaction", globals_["create_eyes_reaction"])
 
 
-def run_cmd(args, *, check=True):
-    return _package_run_cmd(args, check=check)
+def run_cmd(args, *, check=True, env_overrides=None):
+    return _package_run_cmd(args, check=check, env_overrides=env_overrides)
 
 
 _DEFAULT_COMPAT_RUN_CMD = run_cmd
@@ -130,7 +149,7 @@ def list_closed_prs_from_api(repo, limit):
 
 
 def create_eyes_reaction(endpoint):
-    proc = _effective_run_cmd()([
+    args = [
         "gh",
         "api",
         "-X",
@@ -140,7 +159,14 @@ def create_eyes_reaction(endpoint):
         "content=eyes",
         "-H",
         "Accept: application/vnd.github+json",
-    ], check=False)
+    ]
+    runner = _effective_run_cmd()
+    try:
+        proc = runner(args, check=False, env_overrides=getattr(_github_api, "_CURRENT_GH_ENV", None))
+    except TypeError as e:
+        if "env_overrides" not in str(e):
+            raise
+        proc = runner(args, check=False)
     return proc.returncode == 0, (proc.stderr or proc.stdout).strip()[:500]
 
 
@@ -187,9 +213,9 @@ def mark_reaction_acks_ready_for_task(state, task_id):
     return _package_mark_reaction_acks_ready_for_task(state, task_id)
 
 
-def process_ready_reaction_acks(state, *, task_id=None):
+def process_ready_reaction_acks(state, *, task_id=None, repo=None):
     _sync_reaction_helpers()
-    return _package_process_ready_reaction_acks(state, task_id=task_id)
+    return _package_process_ready_reaction_acks(state, task_id=task_id, repo=repo)
 
 
 def scan(args):

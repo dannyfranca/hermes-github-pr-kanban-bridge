@@ -5,8 +5,15 @@ import os
 import subprocess
 
 
-def run_cmd(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run_cmd(
+    args: list[str],
+    *,
+    check: bool = True,
+    env_overrides: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
+    if env_overrides:
+        env.update(env_overrides)
     # Never print env or command lines that might include secrets. We only pass
     # static args and rely on gh's credential store/env internally.
     return subprocess.run(args, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=check, env=env)

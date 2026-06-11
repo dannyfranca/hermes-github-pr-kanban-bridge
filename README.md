@@ -68,6 +68,26 @@ Add exact owner/repo strings:
 "repos": ["dannyfranca/hermes-github-pr-kanban-bridge"]
 ```
 
+Configure authentication explicitly or leave `auth.mode` as `auto`:
+
+```json
+"auth": {
+  "mode": "auto",
+  "github_app": {
+    "helper": "/home/agent/bin/hermes-gh-app",
+    "config": "/home/agent/.hermes/github-apps.json"
+  }
+}
+```
+
+Supported modes:
+
+- `auto`: prefer an ambient `GH_TOKEN`/`GITHUB_TOKEN`, then existing `gh auth`, then mint a GitHub App token per allowlisted repo.
+- `gh` (aliases: `pat`, `token`): use an ambient token or existing `gh auth` only.
+- `github_app`: mint a token for each repo with the configured `hermes-gh-app` helper.
+
+GitHub App mode is service-safe: the bridge passes `HERMES_GITHUB_APP_CONFIG` to the helper and sets a repo-scoped token only for the `gh` calls for that repo. This supports allowlisted repos that span owners/installations. If auth cannot be resolved, the scan prints an actionable error to stderr and exits non-zero instead of succeeding silently.
+
 ## Project layout
 
 - `scripts/github_pr_kanban_bridge.py` remains the stable CLI/systemd entrypoint and legacy import surface.
@@ -102,7 +122,8 @@ Live scheduled behavior:
 
 ```bash
 scripts/github_pr_kanban_bridge.py \
-  --config ~/.hermes/profiles/coder/github-pr-kanban-bridge/config.json
+  --config ~/.hermes/profiles/coder/github-pr-kanban-bridge/config.json \
+  --strict
 ```
 
 ## systemd user timer
@@ -120,4 +141,7 @@ Useful status commands:
 systemctl --user status hermes-github-pr-kanban-bridge.timer --no-pager
 systemctl --user list-timers hermes-github-pr-kanban-bridge.timer --no-pager --all
 systemctl --user status hermes-github-pr-kanban-bridge.service --no-pager --lines=30
+journalctl --user -u hermes-github-pr-kanban-bridge.service --no-pager --since '15 minutes ago'
 ```
+
+The packaged service sets `HERMES_GITHUB_APP_CONFIG=/home/agent/.hermes/github-apps.json` and runs the bridge with `--strict`, so auth/API failures are visible in `systemctl status`/`journalctl` and the timer run is marked failed instead of silently no-oping.

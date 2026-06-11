@@ -10,8 +10,18 @@ from .commands import run_cmd
 from .common import Activity, user_login_and_type
 
 
+_CURRENT_GH_ENV: dict[str, str] | None = None
+
+
+def set_current_gh_env(env: dict[str, str] | None) -> dict[str, str] | None:
+    global _CURRENT_GH_ENV
+    previous = _CURRENT_GH_ENV
+    _CURRENT_GH_ENV = env
+    return previous
+
+
 def gh_json(args: list[str]) -> Any:
-    proc = run_cmd(["gh", *args])
+    proc = run_cmd(["gh", *args], env_overrides=_CURRENT_GH_ENV)
     text = proc.stdout.strip()
     return json.loads(text) if text else None
 
@@ -122,5 +132,5 @@ def create_eyes_reaction(endpoint: str) -> tuple[bool, str]:
         "content=eyes",
         "-H",
         "Accept: application/vnd.github+json",
-    ], check=False)
+    ], check=False, env_overrides=_CURRENT_GH_ENV)
     return proc.returncode == 0, (proc.stderr or proc.stdout).strip()[:500]
