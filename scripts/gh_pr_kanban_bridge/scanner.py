@@ -262,8 +262,22 @@ def scan(args: argparse.Namespace) -> int:
                 continue
             if status != "blocked":
                 if args.dry_run or args.verbose:
-                    print(f"skip {repo}#{number}: linked task {task_id} is {status}, not blocked; {len(unseen)} unseen activity item(s) will be marked seen")
+                    print(f"record {repo}#{number}: linked task {task_id} is {status}, not blocked; {len(unseen)} unseen activity item(s) will be recorded without unblock")
                 if not read_only:
+                    first = unseen[0]
+                    comment = activity_comment(repo, pr, task_id, first)
+                    if len(unseen) > 1:
+                        extra = "\nAdditional unseen activity in this scan:\n" + "\n".join(
+                            f"- {a.event_type} / {a.action} by {a.actor}: {_github_reference(a.url)}" for a in unseen[1:]
+                        )
+                        comment += extra
+                    ok, msg = kanban_comment(task_id, board, author, comment)
+                    if not ok:
+                        errors.append(f"comment failed for non-blocked activity {first.key}: {msg}")
+                    if acknowledge_reactions:
+                        for activity in unseen:
+                            queue_reaction_ack(state, repo, task_id, activity, ready=True)
+                        errors.extend(_process_ready_reaction_acks(state, task_id=task_id, repo=repo))
                     for activity in unseen:
                         seen[activity.key] = activity.created_at or utc_now()
                 continue
