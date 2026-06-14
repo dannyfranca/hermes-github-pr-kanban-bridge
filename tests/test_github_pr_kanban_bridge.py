@@ -240,6 +240,51 @@ def test_successful_unblock_acknowledges_issue_and_review_comments_after_kanban_
     assert saved["pending_reaction_acks"] == {}
 
 
+def test_non_blocked_task_records_and_acknowledges_feedback_without_unblock(tmp_path, monkeypatch):
+    config = tmp_path / "config.json"
+    state = tmp_path / "state.json"
+    write_config(config, state)
+
+    pr = {
+        "number": 8,
+        "title": "Live PR",
+        "url": "https://github.com/Owner/repo/pull/8",
+        "headRefName": "Hermes/live-test",
+        "body": "Kanban-Task: t_deadbeef\n",
+    }
+    activity = bridge.Activity(
+        key="Owner/repo#8:issue-comment:202",
+        event_type="PR issue comment",
+        action="created",
+        actor="human-reviewer",
+        actor_type="User",
+        url="https://github.com/Owner/repo/pull/8#issuecomment-202",
+        created_at="2026-06-08T00:00:00Z",
+    )
+
+    operations = []
+    monkeypatch.setattr(bridge, "gh_ready", lambda: (True, "ok"))
+    monkeypatch.setattr(bridge, "list_closed_prs_from_api", lambda repo, limit: [])
+    monkeypatch.setattr(bridge, "list_open_prs_from_api", lambda repo: [pr])
+    monkeypatch.setattr(bridge, "collect_activities_from_api", lambda repo, number: [activity])
+    monkeypatch.setattr(bridge, "task_status", lambda task_id, board: (True, "ready", ""))
+    monkeypatch.setattr(bridge, "kanban_comment", lambda *args: operations.append(("comment", args)) or (True, ""))
+    monkeypatch.setattr(bridge, "kanban_unblock", lambda *args: operations.append(("unblock", args)) or (True, ""))
+    monkeypatch.setattr(bridge, "create_eyes_reaction", lambda endpoint: operations.append(("reaction", endpoint)) or (True, "created"), raising=False)
+
+    rc = bridge.scan(base_args(config, state, fixture=None))
+
+    assert rc == 0
+    assert [op[0] for op in operations] == ["comment", "reaction"]
+    comment_body = operations[0][1][3]
+    assert "Event ref: github:Owner/repo/pull/8#issuecomment-202" in comment_body
+    assert operations[1][1] == "repos/Owner/repo/issues/comments/202/reactions"
+    saved = json.loads(state.read_text(encoding="utf-8"))
+    assert saved["seen"] == {"Owner/repo#8:issue-comment:202": "2026-06-08T00:00:00Z"}
+    assert saved["reaction_acks"] == {"Owner/repo#8:issue-comment:202": "2026-06-08T00:00:00Z"}
+    assert saved["pending_reaction_acks"] == {}
+
+
 def test_existing_eyes_reaction_is_recorded_once_and_not_retried(tmp_path, monkeypatch):
     config = tmp_path / "config.json"
     state = tmp_path / "state.json"
