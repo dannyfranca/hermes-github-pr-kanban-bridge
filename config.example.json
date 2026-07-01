@@ -5,6 +5,7 @@
   "notes": [
     "Copy this file to ~/.hermes/profiles/coder/github-pr-kanban-bridge/config.json and edit repos.",
     "Only open PRs with head branches starting Hermes/ and body marker Kanban-Task: t_xxxxxxxx are considered.",
+    "Add Kanban-Board: <board_slug> to PR bodies for non-default boards; absent board markers resolve exactly to default with no board search.",
     "auth.mode auto prefers GH_TOKEN/GITHUB_TOKEN, then gh auth, then repo-scoped GitHub App tokens via hermes-gh-app."
   ],
   "notify_existing_on_first_scan": false,

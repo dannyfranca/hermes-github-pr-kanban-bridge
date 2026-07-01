@@ -65,6 +65,7 @@ def init_config(path: Path, state_path: Path, board: str, force: bool = False) -
         "notes": [
             "Add explicit repo allowlist entries as owner/name strings, e.g. \"DannyFranca/example\".",
             "Only open PRs with head branches starting Hermes/ and body marker Kanban-Task: t_xxxxxxxx are considered.",
+            "Add Kanban-Board: <board_slug> to PR bodies for non-default boards; absent board markers resolve exactly to default with no board search.",
             "State GC keeps active open Hermes PR entries, then prunes inactive seen/baselined_prs entries older than state_retention_days and caps inactive entries by state_max_* limits.",
             "Merged PRs with a Kanban-Task marker are completed once, tracked by completed_prs in state.",
             "After successful comment+unblock handling, reaction_acks/pending_reaction_acks dedupe GitHub eyes acknowledgements for issue and review comments.",

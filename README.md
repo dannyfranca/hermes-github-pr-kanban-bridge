@@ -18,10 +18,21 @@ A PR can wake a blocked Kanban card on human review activity only when all gates
 2. PR is open.
 3. PR head branch starts with `Hermes/`.
 4. PR body contains `Kanban-Task: t_xxxxxxxx`.
-5. Linked Kanban task exists and is currently `blocked`.
-6. New activity is from a human, not an ignored bot/actor.
+5. The bridge resolves the Kanban board from `Kanban-Board: <board_slug>` in the PR body, or exactly `default` when the marker is absent. It does not search other boards.
+6. Linked Kanban task exists on the resolved board and is currently `blocked`.
+7. New activity is from a human, not an ignored bot/actor.
 
-Merged PRs are also scanned when `complete_merged_prs` is enabled. A recently closed PR with `mergedAt` and a `Kanban-Task` marker completes the linked Kanban card once, tracked in state as `completed_prs`.
+Merged PRs are also scanned when `complete_merged_prs` is enabled. A recently closed PR with `mergedAt` and a `Kanban-Task` marker completes the linked Kanban card once on the resolved board, tracked in state as `completed_prs`.
+
+PR bodies for non-default boards should include the board marker:
+
+```md
+## Kanban
+Kanban-Board: psp
+Kanban-Task: t_xxxxxxxx
+```
+
+If `Kanban-Board` is absent, `default` is assumed exactly. A task that only exists on another board is skipped, logged as not found on `default`, and its GitHub activity is not marked seen.
 
 Activity types watched:
 
@@ -37,7 +48,8 @@ State stores compact IDs, not comment bodies:
 
 - `seen`: processed GitHub activity keys like `Owner/repo#42:review-comment:123456`.
 - `baselined_prs`: PRs whose historical activity was marked seen on first encounter.
-- `pending_unblocks`: retry queue if Kanban unblock failed.
+- `pending_unblocks`: retry queue if Kanban unblock failed, keyed by resolved board and task for new entries.
+- `task_lookup_failed_prs`: linked PRs whose task was not found on the resolved board; this keeps later marker fixes from baselining and swallowing the original activity.
 - `completed_prs`: merged PRs already used to complete linked Kanban cards.
 
 Retention defaults:
