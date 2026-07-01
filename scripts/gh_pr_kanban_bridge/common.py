@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import datetime as dt
-import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +9,7 @@ from typing import Any
 
 
 TASK_RE = re.compile(r"\bKanban-Task:\s*(t_[0-9a-fA-F]{8,32})\b")
+BOARD_RE = re.compile(r"^Kanban-Board:[ \t]*([A-Za-z0-9_.-]+)[ \t\r]*$", re.MULTILINE)
 HERMES_BRANCH_PREFIX = "Hermes/"
 # This poller is installed as a coder-profile operator utility. Keep the
 # default config/state path stable even when a human runs diagnostics from a
@@ -19,7 +19,7 @@ DEFAULT_PROFILE_HOME = Path("/home/agent/.hermes/profiles/coder")
 DEFAULT_BASE = DEFAULT_PROFILE_HOME / "github-pr-kanban-bridge"
 DEFAULT_CONFIG = DEFAULT_BASE / "config.json"
 DEFAULT_STATE = DEFAULT_BASE / "state.json"
-DEFAULT_BOARD = os.environ.get("HERMES_KANBAN_BOARD", "default")
+DEFAULT_BOARD = "default"
 DEFAULT_STATE_RETENTION_DAYS = 90
 DEFAULT_STATE_MAX_SEEN_ENTRIES = 5000
 DEFAULT_STATE_MAX_BASELINED_PRS = 1000
@@ -84,6 +84,15 @@ def extract_task_id(body: str | None) -> str | None:
         return None
     m = TASK_RE.search(body)
     return m.group(1) if m else None
+
+def extract_board_slug(body: str | None) -> str | None:
+    if not body:
+        return None
+    m = BOARD_RE.search(body)
+    return m.group(1) if m else None
+
+def resolve_kanban_board(body: str | None) -> str:
+    return extract_board_slug(body) or DEFAULT_BOARD
 
 
 def actor_is_ignored(activity: Activity, ignored_actors: set[str], ignore_bots: bool) -> bool:

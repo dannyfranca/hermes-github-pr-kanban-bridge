@@ -15,6 +15,7 @@ from .common import (
     extract_task_id,
     normalize_repo,
     positive_int,
+    resolve_kanban_board,
     utc_now,
 )
 from .auth import AuthContext, resolve_repo_auth
@@ -32,14 +33,50 @@ def _process_ready_reaction_acks(
     *,
     task_id: str | None = None,
     repo: str | None = None,
+    board: str | None = None,
 ) -> list[str]:
     """Call reaction processing while preserving legacy monkeypatch compatibility."""
     try:
-        return process_ready_reaction_acks(state, task_id=task_id, repo=repo)
+        return process_ready_reaction_acks(state, task_id=task_id, repo=repo, board=board)
     except TypeError as e:
+        if "board" in str(e):
+            try:
+                return process_ready_reaction_acks(state, task_id=task_id, repo=repo)
+            except TypeError as repo_error:
+                if "repo" not in str(repo_error):
+                    raise
+                return process_ready_reaction_acks(state, task_id=task_id)
         if "repo" not in str(e):
             raise
         return process_ready_reaction_acks(state, task_id=task_id)
+
+
+def _pending_unblock_key(task_id: str, board: str) -> str:
+    return f"{board}:{task_id}"
+
+
+def _pending_unblock_entry(key: str, value: Any, legacy_board: str) -> tuple[str, str, str]:
+    """Return ``(task_id, board, reason)`` for new and legacy pending-unblock state."""
+    if isinstance(value, dict):
+        raw_task_id = value.get("task_id")
+        task_id = str(raw_task_id or (key.rsplit(":", 1)[-1] if ":" in key else key))
+        board = str(value.get("board") or (key.split(":", 1)[0] if ":" in key else legacy_board))
+        reason = str(value.get("reason") or "GitHub PR activity; wake worker to address feedback")
+        return task_id, board, reason
+    return key, legacy_board, str(value)
+
+
+def _remove_pending_unblock(pending_unblocks: dict[str, Any], task_id: str, board: str) -> None:
+    pending_unblocks.pop(task_id, None)
+    pending_unblocks.pop(_pending_unblock_key(task_id, board), None)
+    for key, value in list(pending_unblocks.items()):
+        if isinstance(value, dict) and str(value.get("task_id") or "") == task_id and str(value.get("board") or "") == board:
+            pending_unblocks.pop(key, None)
+
+
+def _missing_task_message(repo: str, number: Any, task_id: str, board: str, detail: str) -> str:
+    suffix = f" ({detail})" if detail else ""
+    return f"skip {repo}#{number}: linked task {task_id} not found on board {board}{suffix}"
 
 
 def scan(args: argparse.Namespace) -> int:
@@ -56,12 +93,14 @@ def scan(args: argparse.Namespace) -> int:
         "reaction_acks": {},
         "last_scan_at": None,
         "baselined_prs": {},
+        "task_lookup_failed_prs": {},
         "completed_prs": {},
     })
     seen: dict[str, str] = state.setdefault("seen", {})
-    pending_unblocks: dict[str, str] = state.setdefault("pending_unblocks", {})
+    pending_unblocks: dict[str, Any] = state.setdefault("pending_unblocks", {})
     ensure_reaction_state(state)
     baselined_prs: dict[str, str] = state.setdefault("baselined_prs", {})
+    task_lookup_failed_prs: dict[str, str] = state.setdefault("task_lookup_failed_prs", {})
     completed_prs: dict[str, str] = state.setdefault("completed_prs", {})
     allow_existing = bool(cfg.get("notify_existing_on_first_scan"))
     ignored_actors = {str(a).lower() for a in cfg.get("ignored_actors", [])}
@@ -103,23 +142,24 @@ def scan(args: argparse.Namespace) -> int:
     gc_safe = not auth_failed
 
     if pending_unblocks:
-        for task_id, reason in list(pending_unblocks.items()):
+        for pending_key, pending_value in list(pending_unblocks.items()):
+            task_id, pending_board, reason = _pending_unblock_entry(pending_key, pending_value, board)
             if read_only:
-                print(f"{read_only_label} would retry pending unblock for {task_id}: {reason}")
+                print(f"{read_only_label} would retry pending unblock for {task_id} on board {pending_board}: {reason}")
                 continue
-            exists, status, detail = task_status(task_id, board)
+            exists, status, detail = task_status(task_id, pending_board)
             if not exists:
-                errors.append(f"pending unblock task {task_id} no longer exists: {detail}")
-                pending_unblocks.pop(task_id, None)
+                errors.append(f"pending unblock task {task_id} no longer exists on board {pending_board}: {detail}")
+                pending_unblocks.pop(pending_key, None)
                 continue
             if status != "blocked":
-                pending_unblocks.pop(task_id, None)
+                pending_unblocks.pop(pending_key, None)
                 continue
-            ok, msg = kanban_unblock(task_id, board, reason)
+            ok, msg = kanban_unblock(task_id, pending_board, reason)
             if ok:
-                pending_unblocks.pop(task_id, None)
+                pending_unblocks.pop(pending_key, None)
                 if acknowledge_reactions:
-                    mark_reaction_acks_ready_for_task(state, task_id)
+                    mark_reaction_acks_ready_for_task(state, task_id, board=pending_board)
                 print(f"unblocked pending task: {task_id}")
             else:
                 errors.append(f"pending unblock failed for {task_id}: {msg}")
@@ -147,22 +187,26 @@ def scan(args: argparse.Namespace) -> int:
                 merged_at = pr.get("mergedAt") or pr.get("merged_at")
                 if not number or not merged_at:
                     continue
-                task_id = extract_task_id(pr.get("body"))
+                body = pr.get("body")
+                task_id = extract_task_id(body)
                 if not task_id:
                     continue
+                pr_board = resolve_kanban_board(body)
                 pr_key = f"{repo}#{number}"
                 if pr_key in completed_prs:
                     continue
-                exists, status, detail = task_status(task_id, board)
+                exists, status, detail = task_status(task_id, pr_board)
                 if not exists:
+                    msg = _missing_task_message(repo, number, task_id, pr_board, detail)
                     if args.dry_run or args.verbose:
-                        print(f"skip merged {repo}#{number}: linked task {task_id} not found ({detail})")
+                        print(msg)
+                    errors.append(msg)
                     continue
                 if status in {"done", "archived"}:
                     if not read_only:
                         completed_prs[pr_key] = merged_at
                     continue
-                summary = f"GitHub PR merged: {repo}#{number} -> complete {task_id}"
+                summary = f"GitHub PR merged: {repo}#{number} -> complete {task_id} on board {pr_board}"
                 planned.append(summary)
                 if read_only:
                     print(f"{read_only_label} would complete: " + summary)
@@ -175,13 +219,13 @@ def scan(args: argparse.Namespace) -> int:
                     f"Merged at: {merged_at}",
                     f"Linked Kanban task: {task_id}",
                 ])
-                ok, msg = kanban_comment(task_id, board, author, comment)
+                ok, msg = kanban_comment(task_id, pr_board, author, comment)
                 if not ok:
                     errors.append(f"merge comment failed for {pr_key}: {msg}")
                     continue
                 ok, msg = kanban_complete(
                     task_id,
-                    board,
+                    pr_board,
                     f"Completed by GitHub merge of {repo}#{number}: {pr.get('title') or '(untitled)'}",
                     {
                         "source": "github-pr-kanban-bridge",
@@ -195,7 +239,7 @@ def scan(args: argparse.Namespace) -> int:
                     errors.append(f"complete failed for merged {pr_key}: {msg}")
                     continue
                 completed_prs[pr_key] = merged_at
-                pending_unblocks.pop(task_id, None)
+                _remove_pending_unblock(pending_unblocks, task_id, pr_board)
                 print("completed: " + summary)
 
         try:
@@ -212,9 +256,11 @@ def scan(args: argparse.Namespace) -> int:
             head = pr.get("headRefName") or pr.get("head_ref") or ""
             if not isinstance(head, str) or not head.startswith(HERMES_BRANCH_PREFIX):
                 continue
-            task_id = extract_task_id(pr.get("body"))
+            body = pr.get("body")
+            task_id = extract_task_id(body)
             if not task_id:
                 continue
+            pr_board = resolve_kanban_board(body)
 
             pr_key = f"{repo}#{number}"
             active_pr_keys.add(pr_key)
@@ -222,20 +268,29 @@ def scan(args: argparse.Namespace) -> int:
             if fixture_read_only:
                 exists, status, detail = True, "blocked", ""
             else:
-                exists, status, detail = task_status(task_id, board)
+                exists, status, detail = task_status(task_id, pr_board)
             if not exists:
+                msg = _missing_task_message(repo, number, task_id, pr_board, detail)
                 if args.dry_run or args.verbose:
-                    print(f"skip {repo}#{number}: linked task {task_id} not found ({detail})")
+                    print(msg)
+                errors.append(msg)
+                if not read_only:
+                    task_lookup_failed_prs[pr_key] = utc_now()
                 continue
+            had_task_lookup_failure = pr_key in task_lookup_failed_prs
+            if not read_only:
+                if had_task_lookup_failure:
+                    baselined_prs.setdefault(pr_key, utc_now())
+                task_lookup_failed_prs.pop(pr_key, None)
 
             activities = fixture_activities(pr, repo) if fixture is not None else collect_activities_from_api(repo, int(number))
             relevant = [a for a in activities if not actor_is_ignored(a, ignored_actors, ignore_bots)]
             if args.dry_run or args.verbose:
                 ignored_count = len(activities) - len(relevant)
-                print(f"candidate {repo}#{number}: branch={head} task={task_id} task_status={status} activities={len(activities)} relevant={len(relevant)} ignored={ignored_count}")
+                print(f"candidate {repo}#{number}: branch={head} task={task_id} board={pr_board} task_status={status} activities={len(activities)} relevant={len(relevant)} ignored={ignored_count}")
 
             seen_prefix = pr_key + ":"
-            pr_previously_seen = pr_key in baselined_prs or any(key.startswith(seen_prefix) for key in seen)
+            pr_previously_seen = had_task_lookup_failure or pr_key in baselined_prs or any(key.startswith(seen_prefix) for key in seen)
             onboard_pr = allow_existing or pr_previously_seen
 
             unseen: list[Activity] = []
@@ -271,19 +326,19 @@ def scan(args: argparse.Namespace) -> int:
                             f"- {a.event_type} / {a.action} by {a.actor}: {_github_reference(a.url)}" for a in unseen[1:]
                         )
                         comment += extra
-                    ok, msg = kanban_comment(task_id, board, author, comment)
+                    ok, msg = kanban_comment(task_id, pr_board, author, comment)
                     if not ok:
                         errors.append(f"comment failed for non-blocked activity {first.key}: {msg}")
                     if acknowledge_reactions:
                         for activity in unseen:
-                            queue_reaction_ack(state, repo, task_id, activity, ready=True)
-                        errors.extend(_process_ready_reaction_acks(state, task_id=task_id, repo=repo))
+                            queue_reaction_ack(state, repo, task_id, activity, ready=True, board=pr_board)
+                        errors.extend(_process_ready_reaction_acks(state, task_id=task_id, repo=repo, board=pr_board))
                     for activity in unseen:
                         seen[activity.key] = activity.created_at or utc_now()
                 continue
 
             first = unseen[0]
-            summary = f"{repo}#{number} {len(unseen)} new PR activity item(s) -> unblock {task_id}"
+            summary = f"{repo}#{number} {len(unseen)} new PR activity item(s) -> unblock {task_id} on board {pr_board}"
             planned.append(summary)
             if read_only:
                 print(f"{read_only_label} would comment+unblock: " + summary)
@@ -295,25 +350,29 @@ def scan(args: argparse.Namespace) -> int:
                     f"- {a.event_type} / {a.action} by {a.actor}: {_github_reference(a.url)}" for a in unseen[1:]
                 )
                 comment += extra
-            ok, msg = kanban_comment(task_id, board, author, comment)
+            ok, msg = kanban_comment(task_id, pr_board, author, comment)
             if not ok:
                 errors.append(f"comment failed for {first.key}: {msg}")
                 continue
             if acknowledge_reactions:
                 for activity in unseen:
-                    queue_reaction_ack(state, repo, task_id, activity, ready=False)
+                    queue_reaction_ack(state, repo, task_id, activity, ready=False, board=pr_board)
             reason = f"GitHub PR activity on {repo}#{number}; wake worker to address feedback"
-            ok, msg = kanban_unblock(task_id, board, reason)
+            ok, msg = kanban_unblock(task_id, pr_board, reason)
             for activity in unseen:
                 seen[activity.key] = activity.created_at or utc_now()
             if not ok:
-                pending_unblocks[task_id] = reason
+                pending_unblocks[_pending_unblock_key(task_id, pr_board)] = {
+                    "task_id": task_id,
+                    "board": pr_board,
+                    "reason": reason,
+                }
                 errors.append(f"unblock failed for {first.key}; queued pending retry: {msg}")
                 continue
-            pending_unblocks.pop(task_id, None)
+            _remove_pending_unblock(pending_unblocks, task_id, pr_board)
             if acknowledge_reactions:
-                mark_reaction_acks_ready_for_task(state, task_id)
-                errors.extend(_process_ready_reaction_acks(state, task_id=task_id, repo=repo))
+                mark_reaction_acks_ready_for_task(state, task_id, board=pr_board)
+                errors.extend(_process_ready_reaction_acks(state, task_id=task_id, repo=repo, board=pr_board))
             print("unblocked: " + summary)
 
     if fixture is None:

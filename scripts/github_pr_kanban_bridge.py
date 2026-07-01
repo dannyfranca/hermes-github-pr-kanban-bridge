@@ -203,19 +203,19 @@ def _sync_reaction_helpers() -> None:
             setattr(_reactions, name, globals_[name])
 
 
-def queue_reaction_ack(state, repo, task_id, activity, *, ready):
+def queue_reaction_ack(state, repo, task_id, activity, *, ready, board=None):
     _sync_reaction_helpers()
-    return _package_queue_reaction_ack(state, repo, task_id, activity, ready=ready)
+    return _package_queue_reaction_ack(state, repo, task_id, activity, ready=ready, board=board)
 
 
-def mark_reaction_acks_ready_for_task(state, task_id):
+def mark_reaction_acks_ready_for_task(state, task_id, board=None):
     _sync_reaction_helpers()
-    return _package_mark_reaction_acks_ready_for_task(state, task_id)
+    return _package_mark_reaction_acks_ready_for_task(state, task_id, board=board)
 
 
-def process_ready_reaction_acks(state, *, task_id=None, repo=None):
+def process_ready_reaction_acks(state, *, task_id=None, repo=None, board=None):
     _sync_reaction_helpers()
-    return _package_process_ready_reaction_acks(state, task_id=task_id, repo=repo)
+    return _package_process_ready_reaction_acks(state, task_id=task_id, repo=repo, board=board)
 
 
 def scan(args):

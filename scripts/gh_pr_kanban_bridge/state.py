@@ -73,6 +73,9 @@ def gc_state(state: dict[str, Any], cfg: dict[str, Any], active_pr_keys: set[str
     baselined_prs = state.get("baselined_prs")
     if not isinstance(baselined_prs, dict):
         baselined_prs = {}
+    task_lookup_failed_prs = state.get("task_lookup_failed_prs")
+    if not isinstance(task_lookup_failed_prs, dict):
+        task_lookup_failed_prs = {}
     reaction_acks = state.get("reaction_acks")
     if not isinstance(reaction_acks, dict):
         reaction_acks = {}
@@ -101,8 +104,17 @@ def gc_state(state: dict[str, Any], cfg: dict[str, Any], active_pr_keys: set[str
         active_keys=active_pr_keys,
         key_to_active_key=pr_key_from_activity_key,
     )
+    pruned_task_lookup_failed_map, pruned_task_lookup_failed = prune_timestamped_mapping(
+        {str(k): str(v) for k, v in task_lookup_failed_prs.items()},
+        now=now,
+        retention_days=retention_days,
+        max_entries=max_baselined,
+        active_keys=active_pr_keys,
+        key_to_active_key=lambda key: key,
+    )
     state["seen"] = pruned_seen_map
     state["baselined_prs"] = pruned_baseline_map
+    state["task_lookup_failed_prs"] = pruned_task_lookup_failed_map
     state["reaction_acks"] = pruned_reaction_acks_map
     state["last_gc_at"] = now_text
     state["last_gc"] = {
@@ -112,6 +124,12 @@ def gc_state(state: dict[str, Any], cfg: dict[str, Any], active_pr_keys: set[str
         "active_prs": len(active_pr_keys),
         "pruned_seen": pruned_seen,
         "pruned_baselined_prs": pruned_baselined,
+        "pruned_task_lookup_failed_prs": pruned_task_lookup_failed,
         "pruned_reaction_acks": pruned_reaction_acks,
     }
-    return {"seen": pruned_seen, "baselined_prs": pruned_baselined, "reaction_acks": pruned_reaction_acks}
+    return {
+        "seen": pruned_seen,
+        "baselined_prs": pruned_baselined,
+        "task_lookup_failed_prs": pruned_task_lookup_failed,
+        "reaction_acks": pruned_reaction_acks,
+    }

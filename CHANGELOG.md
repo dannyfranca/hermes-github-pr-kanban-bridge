@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Resolve linked Kanban boards from `Kanban-Board: <board_slug>` PR body markers; PRs without the marker now target `default` exactly and never fuzzy-search other boards.
+- Keep missing-task GitHub activity unacknowledged/unseen and preserve the PR for a later marker fix so the original activity is not swallowed by first-scan baselining.
+- Scope pending unblock retries and delayed GitHub reaction acknowledgements by resolved board plus task id.
+
 ## 0.1.0 - 2026-06-08
 
 - Initial versioned release of the local GitHub PR activity → Hermes Kanban unblock bridge.
